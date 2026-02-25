@@ -1,0 +1,22 @@
+# Virtual environment
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# MacOS
+.DS_Store
+
+# Model weights
+*.pth
+
+# ONNX exports
+*.onnx
+*.onnx.data
+
+# Generated numpy files
+*.npy
+
+# Matplotlib outputs
+*.png
