@@ -5,7 +5,6 @@ import torch.nn.functional as F
 
 # ============================================
 # Spatial Attention
-# Conv3x3 → ReLU → Conv1x1 → Sigmoid → Mul
 # ============================================
 class SpatialAttention(nn.Module):
     def __init__(self, channels):
@@ -22,7 +21,6 @@ class SpatialAttention(nn.Module):
 
 # ============================================
 # Channel Attention
-# GAP → FC → ReLU → FC → Sigmoid → Mul
 # ============================================
 class ChannelAttention(nn.Module):
     def __init__(self, channels, reduction=8):
@@ -44,7 +42,7 @@ class ChannelAttention(nn.Module):
 
 
 # ============================================
-# Dual Attention Block
+# Dual Attention
 # ============================================
 class DualAttention(nn.Module):
     def __init__(self, channels):
@@ -53,61 +51,58 @@ class DualAttention(nn.Module):
         self.spatial = SpatialAttention(channels)
         self.channel = ChannelAttention(channels)
 
-        # Concat → 1x1 Conv
         self.fusion = nn.Conv2d(channels * 2, channels, kernel_size=1)
 
     def forward(self, x):
-        spatial_out = self.spatial(x)
-        channel_out = self.channel(x)
+        s = self.spatial(x)
+        c = self.channel(x)
 
-        concat = torch.cat([spatial_out, channel_out], dim=1)
+        concat = torch.cat([s, c], dim=1)
         fused = self.fusion(concat)
 
-        return fused + x  # Residual Add
+        return fused + x
 
 
 # ============================================
-# Backbone with Skip Connection
+# Backbone (UPDATED AS YOU REQUESTED)
 # ============================================
 class Backbone(nn.Module):
     def __init__(self):
         super(Backbone, self).__init__()
 
-        # Block 1
+        # Conv1
         self.conv1 = nn.Conv2d(1, 32, kernel_size=3, padding=1)
-        self.pool1 = nn.MaxPool2d(2)
+        self.bn_after_relu1 = nn.BatchNorm2d(32)  # NEW BN after first ReLU
 
-        # Block 2
+        # Conv2
         self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
-        self.pool2 = nn.MaxPool2d(2)
 
-        # Block 3
+        # Conv3
         self.conv3 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
-        self.pool3 = nn.MaxPool2d(2)
+        self.bn_after_relu3 = nn.BatchNorm2d(128)  # NEW BN before branching
 
-        # Skip projection: after pool2 → after pool3
-        self.skip_conv = nn.Conv2d(64, 128, kernel_size=1, stride=2)
+        # Skip projection (no pooling now, same spatial size)
+        self.skip_conv = nn.Conv2d(64, 128, kernel_size=1)
 
     def forward(self, x):
 
-        # Block 1
+        # -------- Block 1 --------
         x = F.relu(self.conv1(x))
-        x = self.pool1(x)
+        x = self.bn_after_relu1(x)  # BN after first ReLU
 
-        # Block 2
+        # -------- Block 2 --------
         x = F.relu(self.conv2(x))
-        x = self.pool2(x)
 
-        skip = self.skip_conv(x)  # 64x56x56 → 128x28x28
+        skip = self.skip_conv(x)
 
-        # Block 3
+        # -------- Block 3 --------
         x = F.relu(self.conv3(x))
-        x = self.pool3(x)
+        x = self.bn_after_relu3(x)  # BN before branching
 
         # Residual Add
         x = x + skip
 
-        return x  # 1x128x28x28
+        return x
 
 
 # ============================================
