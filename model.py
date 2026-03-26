@@ -10,13 +10,19 @@ class SpatialAttention(nn.Module):
     def __init__(self, channels):
         super(SpatialAttention, self).__init__()
 
-        self.conv3x3 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+        self.pre_conv = nn.Conv2d(channels, 32, kernel_size=3, padding=1)
+        self.pre_relu = nn.ReLU()
+
+        self.conv3x3 = nn.Conv2d(32, channels, kernel_size=3, padding=1)
         self.conv1x1 = nn.Conv2d(channels, channels, kernel_size=1)
 
     def forward(self, x):
+        original = x
+        x = self.pre_conv(x)
+        x = self.pre_relu(x)
         s = F.relu(self.conv3x3(x))
         s = torch.sigmoid(self.conv1x1(s))
-        return x * s
+        return original * s
 
 
 # ============================================
