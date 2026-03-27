@@ -60,7 +60,7 @@ if __name__ == "__main__":
     model.eval()
 
     # Hook last convolution layer BEFORE attention
-    grad_cam = GradCAM(model, model.backbone.conv3)
+    grad_cam = GradCAM(model, model.attention)
 
     # Generate GradCAM for seizure
     print("Generating seizure Grad-CAM...")
@@ -93,7 +93,7 @@ if __name__ == "__main__":
     # Seizure original
     plt.subplot(2, 2, 1)
     plt.title("Seizure - CWT")
-    plt.imshow(orig_seizure, aspect='auto', cmap='gray')
+    plt.imshow(orig_seizure, aspect='auto', cmap='turbo')
     plt.xlabel("Time")
     plt.ylabel("Frequency Scale")
     plt.axis("off")
@@ -101,7 +101,7 @@ if __name__ == "__main__":
     # Seizure GradCAM
     plt.subplot(2, 2, 2)
     plt.title(f"Seizure - GradCAM\nPred: {pred_s_class} ({pred_s_prob:.3f})")
-    plt.imshow(orig_seizure, aspect='auto', cmap='gray')
+    plt.imshow(orig_seizure, aspect='auto', cmap='turbo')
     plt.imshow(cam_resized_seizure, cmap='jet', alpha=0.45)
     plt.xlabel("Time")
     plt.ylabel("Frequency Scale")
@@ -110,7 +110,7 @@ if __name__ == "__main__":
     # Normal original
     plt.subplot(2, 2, 3)
     plt.title("Normal - CWT")
-    plt.imshow(orig_normal, aspect='auto', cmap='gray')
+    plt.imshow(orig_normal, aspect='auto', cmap='turbo')
     plt.xlabel("Time")
     plt.ylabel("Frequency Scale")
     plt.axis("off")
@@ -118,7 +118,7 @@ if __name__ == "__main__":
     # Normal GradCAM
     plt.subplot(2, 2, 4)
     plt.title(f"Normal - GradCAM\nPred: {pred_n_class} ({pred_n_prob:.3f})")
-    plt.imshow(orig_normal, aspect='auto', cmap='gray')
+    plt.imshow(orig_normal, aspect='auto', cmap='turbo')
     plt.imshow(cam_resized_normal, cmap='jet', alpha=0.45)
     plt.xlabel("Time")
     plt.ylabel("Frequency Scale")

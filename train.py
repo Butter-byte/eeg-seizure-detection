@@ -5,6 +5,7 @@ import torch.nn as nn
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+from torch.amp import autocast, GradScaler
 from torch.utils.data import DataLoader, Subset
 from sklearn.model_selection import StratifiedKFold, train_test_split
 from sklearn.metrics import (
@@ -31,8 +32,8 @@ def set_seed(seed=42):
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    # torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = True
 
 set_seed(42)
 
@@ -51,10 +52,11 @@ if __name__ == "__main__":
     skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.cuda.empty_cache()
     print("Using device:", device)
 
     epochs = 40
-    batch_size = 256
+    batch_size = 64
     lr = 0.001
     patience = 7  # Early stopping patience
 
@@ -91,9 +93,27 @@ if __name__ == "__main__":
         val_dataset = BonnDataset(X_val, y_val)
         test_dataset = BonnDataset(X_test, y_test)
 
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-        val_loader = DataLoader(val_dataset, batch_size=batch_size)
-        test_loader = DataLoader(test_dataset, batch_size=batch_size)
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=2,
+            pin_memory=True
+        )
+
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=batch_size,
+            num_workers=2,
+            pin_memory=True
+        )
+
+        test_loader = DataLoader(
+            test_dataset,
+            batch_size=batch_size,
+            num_workers=2,
+            pin_memory=True
+        )
 
         model = MavenNet().to(device)
 
@@ -102,6 +122,8 @@ if __name__ == "__main__":
             lr=lr,
             weight_decay=1e-4
         )
+
+        scaler = GradScaler()
 
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer,
@@ -132,28 +154,42 @@ if __name__ == "__main__":
             model.train()
             train_loss = 0
 
-            for x, y in train_loader:
-                x, y = x.to(device), y.to(device)
+            print(f"\nStarting Epoch {epoch+1}/{epochs}")
+
+            for batch_idx, (x, y) in enumerate(train_loader):
+
+                x = x.to(device, non_blocking=True)
+                y = y.to(device, non_blocking=True)
 
                 optimizer.zero_grad()
-                outputs = model(x)
-                loss = criterion(outputs, y)
-                loss.backward()
-
+                with autocast("cuda"):    
+                    outputs = model(x)
+                    loss = criterion(outputs, y)
+                
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+                
+                scaler.step(optimizer)
+                scaler.update()
 
-                optimizer.step()
-                train_loss += loss.item()
+                train_loss += loss.item() * x.size(0)
+            
+            train_loss /= len(train_loader.dataset)
 
             # Validation
             model.eval()
             val_loss = 0
             with torch.no_grad():
                 for x, y in val_loader:
-                    x, y = x.to(device), y.to(device)
+                    x = x.to(device, non_blocking=True)
+                    y = y.to(device, non_blocking=True)
                     outputs = model(x)
                     loss = criterion(outputs, y)
-                    val_loss += loss.item()
+                    val_loss += loss.item() * x.size(0)
+
+            val_loss /= len(val_loader.dataset)
+
 
             scheduler.step(val_loss)
 

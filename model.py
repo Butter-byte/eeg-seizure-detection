@@ -26,17 +26,16 @@ class ChannelAttention(nn.Module):
     def __init__(self, channels, reduction=8):
         super(ChannelAttention, self).__init__()
 
-        self.gap = nn.AdaptiveAvgPool2d(1)
         self.fc1 = nn.Linear(channels, channels // reduction)
         self.fc2 = nn.Linear(channels // reduction, channels)
 
     def forward(self, x):
-        b, c, _, _ = x.size()
-
-        c_attn = self.gap(x).view(b, c)
+        c_attn = torch.mean(x, dim=3)
+        c_attn = torch.mean(c_attn, dim=2, keepdim=False)
+        c_attn = c_attn.view(c_attn.size(0), c_attn.size(1))
         c_attn = F.relu(self.fc1(c_attn))
         c_attn = torch.sigmoid(self.fc2(c_attn))
-        c_attn = c_attn.view(b, c, 1, 1)
+        c_attn = c_attn.view(c_attn.size(0), c_attn.size(1), 1, 1)
 
         return x * c_attn
 
@@ -54,11 +53,11 @@ class DualAttention(nn.Module):
         self.fusion = nn.Conv2d(channels * 2, channels, kernel_size=1)
 
     def forward(self, x):
-        s = self.spatial(x)
-        c = self.channel(x)
-
-        concat = torch.cat([s, c], dim=1)
-        fused = self.fusion(concat)
+        identity = x
+        s = self.spatial(identity)
+        c = self.channel(identity)
+        sc = torch.cat([s, c], dim=1)
+        fused = self.fusion(sc)
 
         return fused + x
 
@@ -123,8 +122,10 @@ class MavenNet(nn.Module):
         x = self.backbone(x)
         x = self.attention(x)
 
-        x = self.global_pool(x)
-        x = torch.flatten(x, 1)
+        x = torch.mean(x, dim=3)
+        x = torch.mean(x, dim=2, keepdim=False)
+
+        x = x.view(x.size(0), x.size(1))  
         x = self.fc(x)
 
         return x

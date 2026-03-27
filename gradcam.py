@@ -11,14 +11,14 @@ class GradCAM:
         self.activations = None
 
         # Register hooks
-        self.target_layer.register_forward_hook(self._forward_hook)
-        self.target_layer.register_full_backward_hook(self._backward_hook)
+        self.fwd_handle = self.target_layer.register_forward_hook(self._forward_hook)
+        self.bwd_handle = self.target_layer.register_full_backward_hook(self._backward_hook)
 
     def _forward_hook(self, module, input, output):
         self.activations = output
 
     def _backward_hook(self, module, grad_input, grad_output):
-        self.gradients = grad_output[0]
+        self.gradients = grad_output[0].detach()
 
     def generate(self, input_tensor, class_index=None):
 
