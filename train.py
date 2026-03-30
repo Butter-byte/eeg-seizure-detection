@@ -19,9 +19,12 @@ from sklearn.metrics import (
     roc_curve
 )
 
-from preprocessing_pipeline import load_bonn_csv
+from preprocessing_pipeline import load_bonn_raw
+from cwt_generator import generate_cwt
 from bonn_dataset import BonnDataset
 from model import MavenNet
+import os
+
 
 
 # -------------------------
@@ -43,11 +46,26 @@ set_seed(42)
 # -------------------------
 if __name__ == "__main__":
 
-    print("Loading dataset...")
-    data, labels = load_bonn_csv("Epileptic Seizure Recognition.csv")
+    print("Loading dataset from raw folders (Z, O, N, F, S)...")
+    data, labels = load_bonn_raw(".")
 
-    print("Loading CWT representation...")
-    cwt_data = np.load("cwt_data.npy")
+    cwt_path = "cwt_data_raw.npy"
+    if not os.path.exists(cwt_path):
+        print("Generating CWT representation (this may take a few minutes)...")
+        cwt_list = []
+        num_samples = data.shape[0]
+        for i in range(num_samples):
+            if i % 100 == 0:
+                print(f"Processed {i}/{num_samples} samples...")
+            cwt = generate_cwt(data[i]) # Shape: (1, 178, 64)
+            cwt_list.append(cwt)
+        
+        cwt_data = np.array(cwt_list, dtype=np.float32)
+        np.save(cwt_path, cwt_data)
+        print(f"CWT representation saved to {cwt_path}")
+    else:
+        print(f"Loading existing CWT representation from {cwt_path}...")
+        cwt_data = np.load(cwt_path)
 
     skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 

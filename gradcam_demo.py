@@ -3,7 +3,7 @@ import torch.nn.functional as F
 import numpy as np
 import matplotlib.pyplot as plt
 
-from preprocessing_pipeline import load_bonn_csv
+from preprocessing_pipeline import load_bonn_raw
 from model import MavenNet
 from gradcam import GradCAM
 
@@ -32,10 +32,10 @@ if __name__ == "__main__":
 
     # Load dataset
     print("Loading dataset...")
-    data, labels = load_bonn_csv("Epileptic Seizure Recognition.csv")
+    data, labels = load_bonn_raw(".")
 
     print("Loading CWT representation...")
-    cwt_data = np.load("cwt_data.npy")
+    cwt_data = np.load("cwt_data_raw.npy")
 
     # Select one seizure and one normal sample
     seizure_idx = np.where(labels == 1)[0][0]
