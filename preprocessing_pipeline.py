@@ -3,60 +3,90 @@ import glob
 import numpy as np
 
 
-def load_bonn_raw(root_dir="."):
+def load_bonn_raw(root_dir="data/raw"):
     """
-    Loads raw Bonn EEG data from TXT files and splits them into 178-sample chunks.
-    Expected structure: root_dir/Z/*.txt, root_dir/O/*.txt, etc.
+    Load Bonn EEG dataset from TXT files.
+
+    Returns:
+        X      : (N, 178)
+        y      : (N,) labels {0,1,2,3,4}
+        groups : (N,) file-level grouping
     """
+
     X_list = []
     y_list = []
+    group_list = []
 
-    # Map sets to binary labels (Set E/S is Seizure=1, others are 0)
-    # Z=SetA, O=SetB, N=SetC, F=SetD, S=SetE
-    sets = {
-        "Z": 0, "O": 0, "N": 0, "F": 0, "S": 1
+    # Multi-class labels
+    label_map = {
+        "Z": 0,
+        "O": 1,
+        "N": 2,
+        "F": 3,
+        "S": 4
     }
 
-    for set_name, label in sets.items():
-        set_path = os.path.join(root_dir, set_name)
-        
-        # Find all .txt files in the set directory or its subdirectories
-        txt_files = glob.glob(os.path.join(set_path, "**", "*.txt"), recursive=True)
+    for set_name, label in label_map.items():
 
-        if not txt_files:
+        set_path = os.path.join(root_dir, set_name)
+
+        if not os.path.exists(set_path):
+            print(f"Warning: {set_path} not found. Skipping...")
+            continue
+
+        # 🔥 FIX: handle .TXT and .txt
+        files = glob.glob(os.path.join(set_path, "**", "*.*"), recursive=True)
+        txt_files = [f for f in files if f.lower().endswith(".txt")]
+
+        if len(txt_files) == 0:
             print(f"Warning: No TXT files found in {set_path}")
             continue
 
         print(f"Loading {len(txt_files)} files from {set_name}...")
 
         for fpath in sorted(txt_files):
-            # Load the 4096 samples from the text file
+
             try:
-                data = np.loadtxt(fpath)
+                signal = np.loadtxt(fpath)
             except Exception as e:
-                print(f"Error loading {fpath}: {e}")
+                print(f"Skipping {fpath}: {e}")
                 continue
 
-            # Split 4096 samples into 178-sample chunks (23 chunks total)
-            num_chunks = 23 # fixed to match CSV structure exactly
-            chunk_size = 178
-            
-            for i in range(num_chunks):
-                chunk = data[i * chunk_size : (i + 1) * chunk_size]
+            # Ensure correct length
+            if signal.shape[0] < 4096:
+                continue
+
+            # Split into 23 chunks
+            for i in range(23):
+                chunk = signal[i * 178:(i + 1) * 178]
+
+                if chunk.shape[0] != 178:
+                    continue
+
                 X_list.append(chunk)
                 y_list.append(label)
+                group_list.append(fpath)  # SAME file → SAME group
+
+    # -----------------------------
+    # Safety check
+    # -----------------------------
+    if len(X_list) == 0:
+        raise ValueError("No data loaded. Check dataset path or file format.")
 
     X = np.array(X_list, dtype=np.float32)
     y = np.array(y_list, dtype=np.int64)
+    groups = np.array(group_list)
 
     print(f"Total samples loaded: {X.shape[0]}")
 
-    # Per-sample normalization (to match load_bonn_raw logic)
+    # -----------------------------
+    # Normalization (per sample)
+    # -----------------------------
     mean = X.mean(axis=1, keepdims=True)
     std = X.std(axis=1, keepdims=True)
-    std[std == 0] = 1 # avoid divide-by-zero
-    
+    std[std == 0] = 1
+
     X = (X - mean) / std
     X = np.ascontiguousarray(X)
 
-    return X, y
+    return X, y, groups

@@ -9,10 +9,10 @@ import torch.nn.functional as F
 class SpatialAttention(nn.Module):
     def __init__(self, channels):
         super(SpatialAttention, self).__init__()
-        # Match latest diagram: 3-layer bottleneck (3x3 -> 3x3 -> 1x1)
-        self.conv1 = nn.Conv2d(channels, 32, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv2d(32, channels, kernel_size=3, padding=1)
-        self.conv3 = nn.Conv2d(channels, channels, kernel_size=1)
+        # Match latest diagram: 3-layer bottleneck (1x1 -> 3x3 -> 1x1)
+        self.conv1 = nn.Conv2d(channels, 32, kernel_size=1, padding=0)
+        self.conv2 = nn.Conv2d(32, 32, kernel_size=3, padding=1)
+        self.conv3 = nn.Conv2d(32, channels, kernel_size=1)
 
     def forward(self, x):
         identity = x
