@@ -266,5 +266,14 @@ if __name__ == "__main__":
     # AUTO PIPELINE
     # -----------------------------
     print("\nRunning pipeline...")
-    subprocess.run([sys.executable, "scripts/pipeline.py"])
-    print("Done.")
+    result = subprocess.run(
+    [sys.executable, "scripts/pipeline.py"],
+    capture_output=True,
+    text=True
+    )
+    
+    print(result.stdout)
+
+    if result.returncode != 0:
+        print(result.stderr)
+        raise RuntimeError("Pipeline FAILED")
