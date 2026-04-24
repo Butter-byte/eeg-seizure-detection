@@ -11,28 +11,45 @@ from sklearn.metrics import (
 )
 
 
-def compute_metrics(y_true, probs):
+def compute_metrics(y_true, probs, threshold=None):
     """
-    Computes classification metrics using optimal ROC threshold
+    Compute classification metrics.
+
+    If threshold is None:
+        uses ROC Youden index (ONLY for validation use)
     """
 
     y_true = np.array(y_true)
     probs = np.array(probs)
 
-    # Optimal threshold (Youden Index)
-    fpr, tpr, thresholds = roc_curve(y_true, probs)
-    thr = thresholds[np.argmax(tpr - fpr)]
+    # -----------------------------
+    # Threshold selection
+    # -----------------------------
+    if threshold is None:
+        fpr, tpr, thresholds = roc_curve(y_true, probs)
+        idx = np.argmax(tpr - fpr)
+        threshold = thresholds[idx] if idx < len(thresholds) else 0.5
 
-    preds = (probs > thr).astype(int)
+    preds = (probs > threshold).astype(int)
 
-    tn, fp, fn, tp = confusion_matrix(y_true, preds).ravel()
+    # -----------------------------
+    # Confusion matrix (safe)
+    # -----------------------------
+    cm = confusion_matrix(y_true, preds, labels=[0, 1])
+    tn, fp, fn, tp = cm.ravel()
 
-    return {
+    # -----------------------------
+    # Metrics
+    # -----------------------------
+    results = {
         "accuracy": accuracy_score(y_true, preds),
-        "sensitivity": recall_score(y_true, preds),
+        "sensitivity": recall_score(y_true, preds, zero_division=0),
         "specificity": tn / (tn + fp + 1e-8),
-        "precision": precision_score(y_true, preds),
-        "f1": f1_score(y_true, preds),
+        "precision": precision_score(y_true, preds, zero_division=0),
+        "f1": f1_score(y_true, preds, zero_division=0),
         "auc": roc_auc_score(y_true, probs),
         "kappa": cohen_kappa_score(y_true, preds),
+        "threshold": threshold,   # ✅ important
     }
+
+    return results

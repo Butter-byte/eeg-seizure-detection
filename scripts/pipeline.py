@@ -3,19 +3,21 @@ import os
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from src.interpretability.gradcam import GradCAM
+
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
 import torch.nn.functional as F
 
 from sklearn.manifold import TSNE
-from sklearn.metrics import confusion_matrix
+from sklearn.metrics import confusion_matrix, roc_curve, auc
+from sklearn.preprocessing import StandardScaler
 
 from preprocessing_pipeline import load_bonn_raw
 from src.data.cwt import generate_cwt
 from src.data.dataset import BonnDataset
 from src.models.maven_net import MavenNet
-from src.interpretability.gradcam import GradCAM
 
 from torch.utils.data import DataLoader
 
@@ -24,9 +26,14 @@ from torch.utils.data import DataLoader
 # Resize CAM
 # ===============================
 def resize_cam(cam, shape):
-    cam = torch.tensor(cam).unsqueeze(0).unsqueeze(0)
+    cam = torch.as_tensor(cam).unsqueeze(0).unsqueeze(0)
     cam = F.interpolate(cam, size=shape, mode="bilinear", align_corners=False)
-    return cam.squeeze().numpy()
+    cam = cam.squeeze().numpy()
+
+    cam = cam - cam.min()
+    cam = cam / (cam.max() + 1e-8)
+
+    return cam
 
 
 # ===============================
@@ -34,9 +41,8 @@ def resize_cam(cam, shape):
 # ===============================
 print("Loading Bonn dataset...")
 data, labels, _ = load_bonn_raw("data/raw")
-
-# Convert to binary (IMPORTANT)
 labels = (labels == 4).astype(np.int64)
+
 
 # ===============================
 # CWT
@@ -49,7 +55,7 @@ if not os.path.exists(cwt_path):
     os.makedirs("data/processed", exist_ok=True)
     np.save(cwt_path, cwt_data)
 else:
-    cwt_data = np.load(cwt_path)
+    cwt_data = np.load(cwt_path).astype(np.float32)
 
 
 # ===============================
@@ -62,30 +68,17 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Load Model
 # ===============================
 model = MavenNet().to(device)
-
-# -------------------------------
-# AUTO CHECKPOINT LOADING
-# -------------------------------
-ckpt_dir = "checkpoints"
-
-if not os.path.exists(ckpt_dir):
-    raise FileNotFoundError("checkpoints folder not found")
-
-ckpts = [f for f in os.listdir(ckpt_dir) if f.endswith(".pth")]
-
-if len(ckpts) == 0:
-    raise FileNotFoundError("No checkpoint files found")
-
-# Sort for consistency (fold_1, fold_2, ...)
-ckpts.sort()
-
-# Pick first checkpoint (can improve later)
-ckpt_path = os.path.join(ckpt_dir, ckpts[0])
-
-print(f"Loading checkpoint: {ckpt_path}")
-
-model.load_state_dict(torch.load(ckpt_path, map_location=device))
+model.load_state_dict(torch.load("checkpoints/ABCD_vs_E_fold_1.pth", map_location=device))
 model.eval()
+
+
+# ===============================
+# Target Layer (validated)
+# ===============================
+if not hasattr(model, "conv_block_last"):
+    raise AttributeError("Model has no 'conv_block_last'. Update target_layer.")
+
+target_layer = model.conv_block_last
 
 
 # ===============================
@@ -96,130 +89,62 @@ def extract_features(model, X, y):
     loader = DataLoader(BonnDataset(X, y), batch_size=64)
 
     feats, lbls = [], []
-
-    # 🔥 storage for hook
-    feature_storage = []
+    storage = []
 
     def hook_fn(module, input, output):
-        feature_storage.append(output.detach())
+        storage.append(output.detach())
 
-    # ⚠️ attach hook to correct layer
-    handle = model.attention.register_forward_hook(hook_fn)
+    handle = target_layer.register_forward_hook(hook_fn)
 
     with torch.no_grad():
         for x, label in loader:
             x = x.to(device)
 
-            feature_storage.clear()
+            storage.clear()
             _ = model(x)
 
-            f = feature_storage[0]
-            f = torch.mean(f, dim=[2, 3])  # flatten
+            f = storage[0]
+            f = torch.mean(f, dim=[2, 3])
 
             feats.append(f.cpu().numpy())
             lbls.append(label.numpy())
 
     handle.remove()
 
-    return np.concatenate(feats), np.concatenate(lbls)
+    feats = np.concatenate(feats)
+    lbls = np.concatenate(lbls)
+
+    feats = StandardScaler().fit_transform(feats)
+
+    return feats, lbls
 
 
-RUN_TSNE_BEFORE = False
 # ===============================
 # t-SNE
 # ===============================
 print("Running t-SNE...")
 
-# -------------------------------
-# TSNE SAMPLING (safe)
-# -------------------------------
-MAX_SAMPLES = 2000
+idx = np.random.choice(len(cwt_data), min(2000, len(cwt_data)), replace=False)
+X_tsne = cwt_data[idx]
+y_tsne = labels[idx]
 
-if len(cwt_data) > MAX_SAMPLES:
-    idx = np.random.choice(len(cwt_data), MAX_SAMPLES, replace=False)
-    cwt_data_tsne = cwt_data[idx]
-    labels_tsne = labels[idx]
-else:
-    cwt_data_tsne = cwt_data
-    labels_tsne = labels
+features, _ = extract_features(model, X_tsne, y_tsne)
 
+tsne = TSNE(n_components=2, perplexity=40, learning_rate="auto", random_state=42)
+coords = tsne.fit_transform(features)
 
-# BEFORE
-if RUN_TSNE_BEFORE:
-    random_model = MavenNet().to(device)
-    f_before, y_sample = extract_features(random_model, cwt_data_tsne, labels_tsne)
-
-# AFTER
-f_after, _ = extract_features(model, cwt_data_tsne, labels_tsne)
-
-tsne = TSNE(n_components=2, random_state=42)
-
-if RUN_TSNE_BEFORE:
-    coords_before = tsne.fit_transform(f_before)
-
-coords_after = tsne.fit_transform(f_after)
-
-plt.figure(figsize=(10, 5))
-
-if RUN_TSNE_BEFORE:
-    plt.subplot(1, 2, 1)
-    plt.title("t-SNE Before Training")
-    plt.scatter(coords_before[:, 0], coords_before[:, 1], c=y_sample, cmap='coolwarm')
-
-    plt.subplot(1, 2, 2)
-    plt.title("t-SNE After Training")
-    plt.scatter(coords_after[:, 0], coords_after[:, 1], c=y_sample, cmap='coolwarm')
-
-else:
-    plt.title("t-SNE After Training")
-    plt.scatter(coords_after[:, 0], coords_after[:, 1], c=labels_tsne, cmap='coolwarm')
+plt.figure(figsize=(6, 5))
+plt.scatter(coords[:, 0], coords[:, 1], c=y_tsne, cmap="coolwarm", s=10)
+plt.title("t-SNE Feature Space")
 
 os.makedirs("outputs", exist_ok=True)
-plt.savefig("outputs/tsne_comparison.png", dpi=200)
+plt.savefig("outputs/tsne.png", dpi=200)
 plt.close()
 
 
 # ===============================
-# Grad-CAM
+# Threshold (ROC)
 # ===============================
-print("Generating Grad-CAM...")
-
-grad_cam = GradCAM(model, model.attention)
-
-seizure_idx = np.where(labels == 1)[0][0]
-normal_idx = np.where(labels == 0)[0][0]
-
-
-def run_cam(idx, title):
-    sample = torch.tensor(cwt_data[idx:idx+1]).to(device)
-    cam, pred, prob = grad_cam.generate(sample)
-
-    original = cwt_data[idx][0]
-    cam = resize_cam(cam, original.shape)
-
-    plt.imshow(original, cmap='turbo', aspect='auto')
-    plt.imshow(cam, cmap='jet', alpha=0.4)
-    plt.title(f"{title} | Pred {pred} ({prob:.2f})")
-    plt.axis("off")
-
-
-plt.figure(figsize=(10, 5))
-
-plt.subplot(1, 2, 1)
-run_cam(seizure_idx, "Seizure")
-
-plt.subplot(1, 2, 2)
-run_cam(normal_idx, "Normal")
-
-plt.savefig("outputs/gradcam.png", dpi=200)
-plt.close()
-
-
-# ===============================
-# Confusion Matrix
-# ===============================
-print("Computing confusion matrix...")
-
 loader = DataLoader(BonnDataset(cwt_data, labels), batch_size=64)
 
 probs, y_true = [], []
@@ -234,7 +159,65 @@ with torch.no_grad():
 probs = np.array(probs)
 y_true = np.array(y_true)
 
-preds = (probs > 0.5).astype(int)
+fpr, tpr, thresholds = roc_curve(y_true, probs)
+thr = thresholds[np.argmax(tpr - fpr)]
+
+print("Threshold:", thr)
+print("AUC:", auc(fpr, tpr))
+
+
+# ===============================
+# Grad-CAM
+# ===============================
+grad_cam = GradCAM(model, target_layer)
+
+N = 5
+seizure_idx = np.where(labels == 1)[0][:N]
+normal_idx = np.where(labels == 0)[0][:N]
+
+if len(seizure_idx) == 0 or len(normal_idx) == 0:
+    raise RuntimeError("Missing samples for Grad-CAM visualization")
+
+
+def run_cam(idx, title):
+    sample = torch.from_numpy(cwt_data[idx:idx+1]).to(device)
+    sample.requires_grad_(True)
+
+    cam, _, prob = grad_cam.generate(sample)
+
+    # threshold-aligned prediction
+    pred = int(prob > thr)
+
+    original = np.squeeze(cwt_data[idx])
+    cam = resize_cam(cam, original.shape)
+
+    plt.imshow(original, cmap='turbo', aspect='auto')
+    plt.imshow(cam, cmap='jet', alpha=0.4)
+    plt.title(f"{title} | Pred={pred} ({prob:.2f})")
+    plt.axis("off")
+
+
+plt.figure(figsize=(12, 6))
+
+for i, idx in enumerate(seizure_idx):
+    plt.subplot(2, N, i + 1)
+    run_cam(idx, "Seizure")
+
+for i, idx in enumerate(normal_idx):
+    plt.subplot(2, N, N + i + 1)
+    run_cam(idx, "Normal")
+
+plt.savefig("outputs/gradcam.png", dpi=200)
+plt.close()
+
+# 🔴 IMPORTANT: remove hooks after use
+grad_cam.remove_hooks()
+
+
+# ===============================
+# Confusion Matrix
+# ===============================
+preds = (probs > thr).astype(int)
 
 cm = confusion_matrix(y_true, preds)
 
@@ -244,32 +227,19 @@ plt.colorbar()
 
 classes = ["Normal", "Seizure"]
 
-# Add ticks
 plt.xticks([0, 1], classes)
 plt.yticks([0, 1], classes)
 
-# Add labels
-plt.xlabel("Predicted")
-plt.ylabel("Actual")
-
-# 🔥 ADD NUMBERS INSIDE CELLS
-for i in range(cm.shape[0]):
-    for j in range(cm.shape[1]):
-        plt.text(j, i, str(cm[i, j]),
-        ha="center", va="center",
-        color="white" if cm[i, j] > cm.max()/2 else "black")
+for i in range(2):
+    for j in range(2):
+        plt.text(
+            j, i, str(cm[i, j]),
+            ha="center",
+            va="center",
+            color="white" if cm[i, j] > cm.max()/2 else "black"
+        )
 
 plt.savefig("outputs/confusion_matrix.png")
 plt.close()
 
-
 print("All outputs generated successfully.")
-required = [
-    "outputs/tsne_comparison.png",
-    "outputs/gradcam.png",
-    "outputs/confusion_matrix.png"
-]
-
-for f in required:
-    if not os.path.exists(f):
-        raise FileNotFoundError(f"Missing: {f}")

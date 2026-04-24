@@ -10,14 +10,13 @@ def load_bonn_raw(root_dir="data/raw"):
     Returns:
         X      : (N, 178)
         y      : (N,) labels {0,1,2,3,4}
-        groups : (N,) file-level grouping
+        groups : (N,) file-level grouping (int IDs)
     """
 
     X_list = []
     y_list = []
     group_list = []
 
-    # Multi-class labels
     label_map = {
         "Z": 0,
         "O": 1,
@@ -25,6 +24,8 @@ def load_bonn_raw(root_dir="data/raw"):
         "F": 3,
         "S": 4
     }
+
+    group_id = 0  # ✅ compact group indexing
 
     for set_name, label in label_map.items():
 
@@ -34,17 +35,15 @@ def load_bonn_raw(root_dir="data/raw"):
             print(f"Warning: {set_path} not found. Skipping...")
             continue
 
-        # 🔥 FIX: handle .TXT and .txt
-        files = glob.glob(os.path.join(set_path, "**", "*.*"), recursive=True)
-        txt_files = [f for f in files if f.lower().endswith(".txt")]
+        files = glob.glob(os.path.join(set_path, "**", "*.txt"), recursive=True)
 
-        if len(txt_files) == 0:
+        if len(files) == 0:
             print(f"Warning: No TXT files found in {set_path}")
             continue
 
-        print(f"Loading {len(txt_files)} files from {set_name}...")
+        print(f"Loading {len(files)} files from {set_name}...")
 
-        for fpath in sorted(txt_files):
+        for fpath in sorted(files):
 
             try:
                 signal = np.loadtxt(fpath)
@@ -52,41 +51,52 @@ def load_bonn_raw(root_dir="data/raw"):
                 print(f"Skipping {fpath}: {e}")
                 continue
 
-            # Ensure correct length
-            if signal.shape[0] < 4096:
+            # -----------------------------
+            # SANITY CHECKS
+            # -----------------------------
+            if signal.ndim != 1:
                 continue
 
-            # Split into 23 chunks
-            for i in range(23):
-                chunk = signal[i * 178:(i + 1) * 178]
+            if len(signal) < 178:
+                continue
 
-                if chunk.shape[0] != 178:
+            if not np.isfinite(signal).all():
+                continue
+
+            if np.std(signal) < 1e-6:
+                continue
+
+            # -----------------------------
+            # DYNAMIC CHUNKING (FIXED)
+            # -----------------------------
+            n_chunks = len(signal) // 178
+
+            for i in range(n_chunks):
+                start = i * 178
+                end = start + 178
+
+                chunk = signal[start:end]
+
+                if len(chunk) != 178:
                     continue
 
                 X_list.append(chunk)
                 y_list.append(label)
-                group_list.append(fpath)  # SAME file → SAME group
+                group_list.append(group_id)
 
-    # -----------------------------
-    # Safety check
-    # -----------------------------
+            group_id += 1  # increment per file
+
     if len(X_list) == 0:
         raise ValueError("No data loaded. Check dataset path or file format.")
 
     X = np.array(X_list, dtype=np.float32)
     y = np.array(y_list, dtype=np.int64)
-    groups = np.array(group_list)
+    groups = np.array(group_list, dtype=np.int64)
 
     print(f"Total samples loaded: {X.shape[0]}")
+    print(f"Unique groups: {len(np.unique(groups))}")
 
-    # -----------------------------
-    # Normalization (per sample)
-    # -----------------------------
-    mean = X.mean(axis=1, keepdims=True)
-    std = X.std(axis=1, keepdims=True)
-    std[std == 0] = 1
-
-    X = (X - mean) / std
+    # Keep raw signals (CWT handles normalization)
     X = np.ascontiguousarray(X)
 
     return X, y, groups

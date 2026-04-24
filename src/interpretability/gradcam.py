@@ -10,21 +10,29 @@ class GradCAM:
         self.gradients = None
         self.activations = None
 
-        # Register hooks
         self.fwd_handle = self.target_layer.register_forward_hook(self._forward_hook)
         self.bwd_handle = self.target_layer.register_full_backward_hook(self._backward_hook)
 
+    # -----------------------------
+    # Hooks
+    # -----------------------------
     def _forward_hook(self, module, input, output):
-        self.activations = output
+        self.activations = output.detach()   # ✅ FIXED
 
     def _backward_hook(self, module, grad_input, grad_output):
         self.gradients = grad_output[0].detach()
 
+    # -----------------------------
+    # Generate CAM
+    # -----------------------------
     def generate(self, input_tensor, class_index=None):
+
+        # ✅ RESET (important)
+        self.gradients = None
+        self.activations = None
 
         self.model.eval()
 
-        # Forward pass
         output = self.model(input_tensor)
 
         probs = torch.softmax(output, dim=1)
@@ -34,29 +42,39 @@ class GradCAM:
         if class_index is None:
             class_index = pred_class
 
-        # Backward pass
-        target = output[0, class_index]
+        target = output[:, class_index]
 
-        self.model.zero_grad()
-        target.backward(retain_graph=True)
+        self.model.zero_grad(set_to_none=True)
+        target.backward()
 
-        # Extract gradients and activations
-        gradients = self.gradients[0].detach().cpu().numpy()
-        activations = self.activations[0].detach().cpu().numpy()
+        # safety check
+        if self.gradients is None or self.activations is None:
+            raise RuntimeError("GradCAM hooks failed")
 
-        # Compute channel-wise weights
+        gradients = self.gradients[0].cpu().numpy()
+        activations = self.activations[0].cpu().numpy()
+
+        # -----------------------------
+        # Grad-CAM
+        # -----------------------------
         weights = np.mean(gradients, axis=(1, 2))
 
-        # Weighted sum
         cam = np.zeros(activations.shape[1:], dtype=np.float32)
+
         for i, w in enumerate(weights):
             cam += w * activations[i]
 
-        # ReLU
         cam = np.maximum(cam, 0)
 
-        # Normalize
-        cam = cam - cam.min()
-        cam = cam / (cam.max() + 1e-8)
+        # normalize
+        cam -= cam.min()
+        cam /= (cam.max() + 1e-8)
 
         return cam, pred_class, pred_prob
+
+    # -----------------------------
+    # Cleanup (IMPORTANT)
+    # -----------------------------
+    def remove_hooks(self):
+        self.fwd_handle.remove()
+        self.bwd_handle.remove()
