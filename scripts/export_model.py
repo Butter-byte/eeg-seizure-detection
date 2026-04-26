@@ -21,9 +21,8 @@ if __name__ == "__main__":
     model = MavenNet().to(device)
 
     # ✅ Load trained model (IMPORTANT)
-    model.load_state_dict(
-        torch.load("checkpoints/ABCD_vs_E_fold_1.pth", map_location=device)
-    )
+    state_dict = torch.load("checkpoints/ABCD_vs_E_fold_1.pth", map_location=device)
+    model.load_state_dict(state_dict, strict=True)
 
     model.eval()
 

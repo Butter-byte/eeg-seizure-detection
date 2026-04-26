@@ -3,7 +3,6 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import torch
-
 from src.models.maven_net import MavenNet
 
 
@@ -30,16 +29,16 @@ def test_model():
     assert output.shape == (1, 2), "❌ Output shape incorrect"
 
     # -------------------------------
-    # Target layer existence
+    # Target layer (FIXED)
     # -------------------------------
-    try:
-        target_layer = model.conv_block_last
-        print("\n✔ target_layer found: conv_block_last")
-    except AttributeError:
-        print("\n❌ conv_block_last not found")
-        print("👉 You must change target_layer in your main script")
-        print(model)
-        return
+    def get_last_conv_layer(model):
+        for module in reversed(list(model.modules())):
+            if isinstance(module, torch.nn.Conv2d):
+                return module
+        raise ValueError("No Conv2d layer found")
+
+    target_layer = get_last_conv_layer(model)
+    print(f"\n✔ target_layer found: {target_layer}")
 
     # -------------------------------
     # Feature map check
@@ -80,7 +79,7 @@ def test_model():
     print("✔ Feature map valid for Grad-CAM")
 
     # -------------------------------
-    # Gradient check at target layer
+    # Gradient check
     # -------------------------------
     grad = None
 
@@ -90,7 +89,7 @@ def test_model():
 
     handle_bwd = target_layer.register_full_backward_hook(backward_hook)
 
-    x.requires_grad = True
+    x.requires_grad_(True)
 
     output = model(x)
     target = output[:, 1]
