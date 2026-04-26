@@ -21,6 +21,10 @@ from src.models.maven_net import MavenNet
 
 from torch.utils.data import DataLoader
 
+RUN_TSNE = False
+RUN_ROC = True
+RUN_GRADCAM = True
+RUN_CM = False
 
 # ===============================
 # Resize CAM
@@ -75,10 +79,13 @@ model.eval()
 # ===============================
 # Target Layer (validated)
 # ===============================
-if not hasattr(model, "conv_block_last"):
-    raise AttributeError("Model has no 'conv_block_last'. Update target_layer.")
+def get_last_conv_layer(model):
+    for module in reversed(list(model.modules())):
+        if isinstance(module, torch.nn.Conv2d):
+            return module
+    raise ValueError("No Conv2d layer found in model")
 
-target_layer = model.conv_block_last
+target_layer = get_last_conv_layer(model)
 
 
 # ===============================
@@ -121,125 +128,148 @@ def extract_features(model, X, y):
 
 # ===============================
 # t-SNE
-# ===============================
-print("Running t-SNE...")
+# ===============================\
+if RUN_TSNE:
+    print("Running t-SNE...")
 
-idx = np.random.choice(len(cwt_data), min(2000, len(cwt_data)), replace=False)
-X_tsne = cwt_data[idx]
-y_tsne = labels[idx]
+    idx = np.random.choice(len(cwt_data), min(2000, len(cwt_data)), replace=False)
+    X_tsne = cwt_data[idx]
+    y_tsne = labels[idx]
 
-features, _ = extract_features(model, X_tsne, y_tsne)
+    features, _ = extract_features(model, X_tsne, y_tsne)
 
-tsne = TSNE(n_components=2, perplexity=40, learning_rate="auto", random_state=42)
-coords = tsne.fit_transform(features)
+    tsne = TSNE(n_components=2, perplexity=40, learning_rate="auto", random_state=42)
+    coords = tsne.fit_transform(features)
 
-plt.figure(figsize=(6, 5))
-plt.scatter(coords[:, 0], coords[:, 1], c=y_tsne, cmap="coolwarm", s=10)
-plt.title("t-SNE Feature Space")
+    plt.figure(figsize=(6, 5))
+    plt.scatter(coords[:, 0], coords[:, 1], c=y_tsne, cmap="coolwarm", s=10)
+    plt.title("t-SNE Feature Space")
 
-os.makedirs("outputs", exist_ok=True)
-plt.savefig("outputs/tsne.png", dpi=200)
-plt.close()
+    os.makedirs("outputs", exist_ok=True)
+    plt.savefig("outputs/tsne.png", dpi=200)
+    plt.close()
 
 
 # ===============================
 # Threshold (ROC)
 # ===============================
-loader = DataLoader(BonnDataset(cwt_data, labels), batch_size=64)
+if RUN_ROC:
+    print("Calculating ROC curve...")
+    loader = DataLoader(BonnDataset(cwt_data, labels), batch_size=64)
 
-probs, y_true = [], []
+    probs, y_true = [], []
 
-with torch.no_grad():
-    for x, y in loader:
-        x = x.to(device)
-        p = torch.softmax(model(x), dim=1)[:, 1]
-        probs.extend(p.cpu().numpy())
-        y_true.extend(y.numpy())
+    with torch.no_grad():
+        for x, y in loader:
+            x = x.to(device)
+            p = torch.softmax(model(x), dim=1)[:, 1]
+            probs.extend(p.cpu().numpy())
+            y_true.extend(y.numpy())
 
-probs = np.array(probs)
-y_true = np.array(y_true)
+    probs = np.array(probs)
+    y_true = np.array(y_true)
 
-fpr, tpr, thresholds = roc_curve(y_true, probs)
-thr = thresholds[np.argmax(tpr - fpr)]
+    fpr, tpr, thresholds = roc_curve(y_true, probs)
+    thr = thresholds[np.argmax(tpr - fpr)]
 
-print("Threshold:", thr)
-print("AUC:", auc(fpr, tpr))
+    print("Threshold:", thr)
+    print("AUC:", auc(fpr, tpr))
 
 
 # ===============================
-# Grad-CAM
+# Grad-CAM (3 Seizure Samples)
 # ===============================
-grad_cam = GradCAM(model, target_layer)
+if RUN_GRADCAM:
 
-N = 5
-seizure_idx = np.where(labels == 1)[0][:N]
-normal_idx = np.where(labels == 0)[0][:N]
+    grad_cam = GradCAM(model, target_layer)
 
-if len(seizure_idx) == 0 or len(normal_idx) == 0:
-    raise RuntimeError("Missing samples for Grad-CAM visualization")
+    # Pick 3 seizure samples
+    seizure_idx = np.where(labels == 1)[0][:3]
 
+    plt.figure(figsize=(8, 10))
 
-def run_cam(idx, title):
-    sample = torch.from_numpy(cwt_data[idx:idx+1]).to(device)
-    sample.requires_grad_(True)
+    for i, idx in enumerate(seizure_idx):
 
-    cam, _, prob = grad_cam.generate(sample)
+        sample = torch.from_numpy(cwt_data[idx:idx+1]).to(device)
+        sample.requires_grad_(True)
 
-    # threshold-aligned prediction
-    pred = int(prob > thr)
+        # Prediction
+        with torch.no_grad():
+            out = model(sample)
+            prob = torch.softmax(out, dim=1)[0, 1].item()
 
-    original = np.squeeze(cwt_data[idx])
-    cam = resize_cam(cam, original.shape)
+        pred = int(prob > thr)
 
-    plt.imshow(original, cmap='turbo', aspect='auto')
-    plt.imshow(cam, cmap='jet', alpha=0.4)
-    plt.title(f"{title} | Pred={pred} ({prob:.2f})")
-    plt.axis("off")
+        # Grad-CAM (force seizure class)
+        cams = []
 
+        for _ in range(5):   # try 5 first
+            noise = torch.randn_like(sample) * 0.01
+            cam_i, _, _ = grad_cam.generate(sample + noise, class_index=1)
+            cams.append(cam_i)
 
-plt.figure(figsize=(12, 6))
+        cam = np.mean(cams, axis=0)
 
-for i, idx in enumerate(seizure_idx):
-    plt.subplot(2, N, i + 1)
-    run_cam(idx, "Seizure")
+        original = np.squeeze(cwt_data[idx])
+        cam = resize_cam(cam, original.shape)
 
-for i, idx in enumerate(normal_idx):
-    plt.subplot(2, N, N + i + 1)
-    run_cam(idx, "Normal")
+        # -----------------------
+        # Original
+        # -----------------------
+        plt.subplot(3, 2, i*2 + 1)
+        im1 = plt.imshow(original, cmap='turbo', aspect='auto', interpolation='bilinear')
+        plt.title(f"Seizure {i+1} - Original")
+        plt.axis("off")
+        plt.colorbar(im1, fraction=0.046, pad=0.02)
 
-plt.savefig("outputs/gradcam.png", dpi=200)
-plt.close()
+        # -----------------------
+        # Grad-CAM
+        # -----------------------
+        plt.subplot(3, 2, i*2 + 2)
+        plt.imshow(original, cmap='turbo', aspect='auto', interpolation='bilinear')
+        im2 = plt.imshow(cam, cmap='jet', alpha=0.4, interpolation='bilinear')
+        plt.title(f"Grad-CAM Overlay \nPred={pred} ({prob:.2f})")
+        plt.axis("off")
+        plt.colorbar(im2, fraction=0.046, pad=0.02)
 
-# 🔴 IMPORTANT: remove hooks after use
-grad_cam.remove_hooks()
+    plt.subplots_adjust(top=0.92)
+    plt.tight_layout()
+
+    os.makedirs("outputs", exist_ok=True)
+    plt.savefig("outputs/gradcam_seizure_3samples.png", dpi=200)
+    plt.close()
+
+    grad_cam.remove_hooks()
 
 
 # ===============================
 # Confusion Matrix
 # ===============================
-preds = (probs > thr).astype(int)
+if RUN_CM:
+    print("Generating confusion matrix...")
+    preds = (probs > thr).astype(int)
 
-cm = confusion_matrix(y_true, preds)
+    cm = confusion_matrix(y_true, preds)
 
-plt.imshow(cm, cmap='Blues')
-plt.title("Confusion Matrix")
-plt.colorbar()
+    plt.imshow(cm, cmap='Blues')
+    plt.title("Confusion Matrix")
+    plt.colorbar()
 
-classes = ["Normal", "Seizure"]
+    classes = ["Normal", "Seizure"]
 
-plt.xticks([0, 1], classes)
-plt.yticks([0, 1], classes)
+    plt.xticks([0, 1], classes)
+    plt.yticks([0, 1], classes)
 
-for i in range(2):
-    for j in range(2):
-        plt.text(
-            j, i, str(cm[i, j]),
-            ha="center",
-            va="center",
-            color="white" if cm[i, j] > cm.max()/2 else "black"
-        )
+    for i in range(2):
+        for j in range(2):
+            plt.text(
+                j, i, str(cm[i, j]),
+                ha="center",
+                va="center",
+                color="white" if cm[i, j] > cm.max()/2 else "black"
+            )
 
-plt.savefig("outputs/confusion_matrix.png")
-plt.close()
+    plt.savefig("outputs/confusion_matrix.png")
+    plt.close()
 
 print("All outputs generated successfully.")

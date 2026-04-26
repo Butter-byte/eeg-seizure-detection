@@ -17,10 +17,10 @@ class GradCAM:
     # Hooks
     # -----------------------------
     def _forward_hook(self, module, input, output):
-        self.activations = output.detach()   # ✅ FIXED
+        self.activations = output   # ✅ FIXED
 
     def _backward_hook(self, module, grad_input, grad_output):
-        self.gradients = grad_output[0].detach()
+        self.gradients = grad_output[0]
 
     # -----------------------------
     # Generate CAM
@@ -51,24 +51,37 @@ class GradCAM:
         if self.gradients is None or self.activations is None:
             raise RuntimeError("GradCAM hooks failed")
 
-        gradients = self.gradients[0].cpu().numpy()
-        activations = self.activations[0].cpu().numpy()
-
         # -----------------------------
         # Grad-CAM
         # -----------------------------
-        weights = np.mean(gradients, axis=(1, 2))
+        grads = self.gradients[0].detach().cpu().numpy()
+        acts = self.activations[0].detach().cpu().numpy()
 
-        cam = np.zeros(activations.shape[1:], dtype=np.float32)
+        grads_sq = grads ** 2
+        grads_cube = grads_sq * grads
+
+        eps = 1e-8
+        denominator = 2 * grads_sq + np.sum(acts * grads_cube, axis=(1, 2), keepdims=True)
+        denominator = np.where(denominator != 0, denominator, eps)
+
+        alpha = grads_sq / denominator
+        weights = np.sum(alpha * np.maximum(grads, 0), axis=(1, 2))
+
+        cam = np.zeros(acts.shape[1:], dtype=np.float32)
 
         for i, w in enumerate(weights):
-            cam += w * activations[i]
+            cam += w * acts[i]
 
+        # ReLU
         cam = np.maximum(cam, 0)
 
-        # normalize
-        cam -= cam.min()
-        cam /= (cam.max() + 1e-8)
+        # percentage normalization
+        low = np.percentile(cam, 5)
+        high = np.percentile(cam, 95)
+        cam = np.clip((cam - low) / (high - low + 1e-8), 0, 1)
+
+        # thresholding
+        cam = np.where(cam > 0.4, cam, 0)
 
         return cam, pred_class, pred_prob
 
